@@ -1,0 +1,11 @@
+[Unit]
+Description=ping completion latch
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/staton/ping/ping.py serve
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

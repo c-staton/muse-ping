@@ -1,0 +1,53 @@
+#!/bin/bash
+# ping — pull-side CLI for the Ping completion latch.
+#
+# Two transports:
+#   SSH mode (default): runs curl ON the relay box via /tmp/box-ssh.sh.
+#     The pull token lives at ~/.config/ping/pull-token on the box (0600)
+#     and is never printed, logged, or returned to the caller.
+#   HTTPS mode: set PING_URL and PING_PULL_TOKEN env vars.
+#     PING_PULL_TOKEN must come from the user's secure credential store.
+set -u
+
+BASE="${PING_URL:-}"
+SSH_MODE=1
+[ -n "$BASE" ] && SSH_MODE=0
+
+ping_curl() {  # args: method path [json-body]
+  local method="$1" path="$2" body="${3:-}"
+  if [ "$SSH_MODE" = 1 ]; then
+    local token_expr='$(cat ~/.config/ping/pull-token)'
+    local cmd="curl -s -m 65 -X $method 'http://127.0.0.1:17844$path'"
+    [ -n "$body" ] && cmd="$cmd -H 'Content-Type: application/json' -d $(printf %q "$body")"
+    cmd="$cmd -H \"Authorization: Bearer $token_expr\""
+    /tmp/box-ssh.sh "$cmd"
+  else
+    [ -n "${PING_PULL_TOKEN:-}" ] || { echo "PING_PULL_TOKEN not set" >&2; exit 2; }
+    if [ -n "$body" ]; then
+      curl -s -m 65 -X "$method" "$BASE$path" \
+        -H "Authorization: Bearer $PING_PULL_TOKEN" \
+        -H 'Content-Type: application/json' -d "$body"
+    else
+      curl -s -m 65 -X "$method" "$BASE$path" \
+        -H "Authorization: Bearer $PING_PULL_TOKEN"
+    fi
+  fi
+}
+
+usage() {
+  echo "usage: ping inbox | wait <wait_id> [timeout] | events [after] | mint <source> <purpose> [ttl_hours]" >&2
+  exit 2
+}
+
+case "${1:-}" in
+  inbox)  ping_curl GET /v1/inbox | python3 -m json.tool; echo ;;
+  wait)
+    [ $# -ge 2 ] || usage
+    ping_curl GET "/v1/waits/$2?timeout=${3:-25}"; echo ;;
+  events)
+    ping_curl GET "/v1/events?after=${2:-0}" | python3 -m json.tool; echo ;;
+  mint)
+    [ $# -ge 3 ] || usage
+    ping_curl POST /v1/waits "{\"source\":\"$2\",\"purpose\":\"$3\",\"ttl_hours\":${4:-72}}" | python3 -m json.tool; echo ;;
+  *) usage ;;
+esac
