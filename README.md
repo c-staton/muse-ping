@@ -61,9 +61,20 @@ curl -s localhost:17844/v1/inbox -H "Authorization: Bearer <pull-token>"
 
 A hook script for workers is in `hooks/ping-hook.sh`. A `ping` CLI wrapper for the agent side is in `skill/`.
 
+## Wake up
+
+Ping is two halves: the latch (this server) and the wake-up (the agent holds a call).
+
+```bash
+# hold in a background task — returns the moment ANY wait closes
+curl -s 'localhost:17844/v1/wait-any?timeout=25&after=<last_seq>'
+```
+
+`agent/wait-any.sh` does this with a cursor file: exit 0 with the event JSON when a completion lands, exit 3 on timeout. Nothing can push-wake an agent from outside. The agent holds this call, and the return is what wakes it. One scheduled task remains the backup.
+
 ## Limits, stated plainly
 
-- Ping cannot wake Muse. It is a latch, not a push notification.
+- Ping cannot push-wake an agent. The wake-up is a held long-poll, not a push notification.
 - Statuses are fixed: `succeeded`, `failed`, `blocked`. Nothing else.
 - Push tokens are stateless bearer tokens. They cannot be revoked individually; delete the row from the tokens table to kill one.
 - Self-host it. Do not run one relay for other people's agent completions.

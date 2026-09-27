@@ -35,7 +35,7 @@ ping_curl() {  # args: method path [json-body]
 }
 
 usage() {
-  echo "usage: ping inbox | wait <wait_id> [timeout] | events [after] | mint <source> <purpose> [ttl_hours]" >&2
+  echo "usage: ping inbox | wait <wait_id> [timeout] | events [after] | mint <source> <purpose> [ttl_hours] | wait-any [timeout]" >&2
   exit 2
 }
 
@@ -44,6 +44,11 @@ case "${1:-}" in
   wait)
     [ $# -ge 2 ] || usage
     ping_curl GET "/v1/waits/$2?timeout=${3:-25}"; echo ;;
+  wait-any)
+    # wake-up: holds until ANY wait closes. Prints event JSON on 200,
+    # exit 3 on 204 (nothing new). Meant for background tasks.
+    out="$(ping_curl GET "/v1/wait-any?timeout=${2:-25}&after=${3:-0}")"
+    if [ -z "$out" ]; then exit 3; else printf '%s\n' "$out"; fi ;;
   events)
     ping_curl GET "/v1/events?after=${2:-0}" | python3 -m json.tool; echo ;;
   mint)

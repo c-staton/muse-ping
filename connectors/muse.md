@@ -7,8 +7,18 @@ it closes the wait.
 
 **Honest limits:** nothing can wake an idle Muse from outside. While a task is
 running, long-poll the wait inside that task. For work that outlives the chat,
-use one scheduled task that checks for closed waits. This relay is a doorbell,
-not an alarm clock.
+hold one wake-up call and use a scheduled task as backup:
+
+```
+GET /v1/wait-any?timeout=25&after=<last_seq>
+-> 200 {"seq":N,"wait_id":"w_...","status":"...","summary":"...","data":{...}}
+-> 204  (nothing new — hold again)
+```
+
+Run the hold as a background task: the moment it returns 200, a completion
+landed — wake up and read it. `after` is your cursor; keep it in a file so a
+restarted holder does not replay old events. This relay is a doorbell, not an
+alarm clock.
 
 Base URL: {base_url}
 Full API spec: {base_url}/openapi.json

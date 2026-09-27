@@ -9,6 +9,10 @@ Endpoints (all JSON; auth = Authorization: Bearer <token>):
   POST /v1/waits                  (pull)  mint a wait
   POST /v1/events                 (push)  close/report on a wait
   GET  /v1/waits/<id>?timeout=25  (pull)  long-poll: 200 event or 204 open
+  GET  /v1/wait-any?timeout=25     (pull)  wake-up: 200 when ANY wait closes,
+                                          204 on timeout. Hold this in a
+                                          background task; when it returns,
+                                          a completion landed.
   GET  /v1/events?after=N         (pull)  cursor read, at-least-once
   GET  /v1/inbox                  (pull)  doctor: seq, open waits, last activity
   GET  /health                            no auth
@@ -46,8 +50,18 @@ it closes the wait.
 
 **Honest limits:** nothing can wake an idle Muse from outside. While a task is
 running, long-poll the wait inside that task. For work that outlives the chat,
-use one scheduled task that checks for closed waits. This relay is a doorbell,
-not an alarm clock.
+hold one wake-up call and use a scheduled task as backup:
+
+```
+GET /v1/wait-any?timeout=25&after=<last_seq>
+-> 200 {"seq":N,"wait_id":"w_...","status":"...","summary":"...","data":{...}}
+-> 204  (nothing new — hold again)
+```
+
+Run the hold as a background task: the moment it returns 200, a completion
+landed — wake up and read it. `after` is your cursor; keep it in a file so a
+restarted holder does not replay old events. This relay is a doorbell, not an
+alarm clock.
 
 Base URL: {base_url}
 Full API spec: {base_url}/openapi.json
@@ -196,6 +210,21 @@ OPENAPI = {
                 "responses": {
                     "200": {"description": "terminal event"},
                     "204": {"description": "still open"}},
+            }
+        },
+        "/v1/wait-any": {
+            "get": {
+                "summary": "Wake-up: long-poll until ANY wait closes (pull token)",
+                "parameters": [
+                    {"name": "after", "in": "query",
+                     "schema": {"type": "integer", "default": 0},
+                     "description": "cursor: only events after this seq"},
+                    {"name": "timeout", "in": "query",
+                     "schema": {"type": "integer", "default": 25,
+                                "maximum": 30}}],
+                "responses": {
+                    "200": {"description": "a completion landed"},
+                    "204": {"description": "nothing new"}},
             }
         },
         "/v1/inbox": {
@@ -441,6 +470,34 @@ class H(BaseHTTPRequestHandler):
                         "seq": ev[0], "wait_id": wait_id, "status": ev[1],
                         "summary": ev[2], "data": json.loads(ev[3]),
                         "created_at": ev[4],
+                    })
+                if time.time() >= deadline:
+                    return self._send(204)
+                time.sleep(0.5)
+        if u.path == "/v1/wait-any":
+            if not self._auth("pull"):
+                return self._send(401, {"error": "unauthorized"})
+            q = parse_qs(u.query)
+            try:
+                timeout = min(30, max(1, int(q.get("timeout", ["25"])[0])))
+                after = int(q.get("after", ["0"])[0])
+            except ValueError:
+                return self._send(400, {"error": "bad timeout/after"})
+            deadline = time.time() + timeout
+            while True:
+                c = db()
+                ev = c.execute(
+                    "SELECT seq, wait_id, status, summary, data, created_at FROM events"
+                    " WHERE seq > ? AND already_terminal=0"
+                    " ORDER BY seq ASC LIMIT 1",
+                    (after,),
+                ).fetchone()
+                c.close()
+                if ev:
+                    return self._send(200, {
+                        "seq": ev[0], "wait_id": ev[1], "status": ev[2],
+                        "summary": ev[3], "data": json.loads(ev[4]),
+                        "created_at": ev[5],
                     })
                 if time.time() >= deadline:
                     return self._send(204)
